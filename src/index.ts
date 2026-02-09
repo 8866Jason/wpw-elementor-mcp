@@ -2,10 +2,26 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { existsSync } from "fs";
+import { resolve } from "path";
 import { z } from "zod";
 import { ElementorService } from "./elementor.js";
 
-const PROJECT_DIR = process.env.DDEV_PROJECT_DIR || process.cwd();
+function detectProjectDir(): string {
+  // 1. Explicit env var takes priority
+  if (process.env.DDEV_PROJECT_DIR) {
+    return process.env.DDEV_PROJECT_DIR;
+  }
+  // 2. Check if cwd is a DDEV project
+  const cwd = process.cwd();
+  if (existsSync(resolve(cwd, ".ddev/config.yaml"))) {
+    return cwd;
+  }
+  // 3. Fallback to cwd (ddev will report its own error if not a project)
+  return cwd;
+}
+
+const PROJECT_DIR = detectProjectDir();
 const elementor = new ElementorService(PROJECT_DIR);
 
 const server = new McpServer({
@@ -425,7 +441,7 @@ server.registerTool(
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Elementor MCP Server v2.1 running on stdio (16 tools)");
+  console.error(`Elementor MCP Server v2.1 running on stdio (16 tools) — project: ${PROJECT_DIR}`);
 }
 
 main().catch((err) => {

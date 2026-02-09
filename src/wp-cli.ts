@@ -22,9 +22,12 @@ export class WpCli {
         { cwd: this.projectDir, timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 },
         (error, stdout, stderr) => {
           if (error) {
+            const hint = error.message.includes("not a DDEV project")
+              ? `\nHint: The current directory (${this.projectDir}) is not a DDEV project. Set DDEV_PROJECT_DIR env var or run Claude Code from a DDEV project directory.`
+              : "";
             reject(
               new Error(
-                `WP-CLI error: ${error.message}${stderr ? `\nstderr: ${stderr}` : ""}`
+                `WP-CLI error: ${error.message}${stderr ? `\nstderr: ${stderr}` : ""}${hint}`
               )
             );
             return;
