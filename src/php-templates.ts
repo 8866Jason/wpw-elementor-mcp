@@ -935,6 +935,551 @@ echo json_encode(array(
 `;
 }
 
+// ─── Phase 1: CRUD Completion ────────────────────────────
+
+/** Add a new element to a container */
+export function phpAddElement(
+  postId: number,
+  containerId: string,
+  elType: string,
+  widgetType: string | undefined,
+  settingsJson: string,
+  position: number | undefined
+): string {
+  const settingsBase64 = Buffer.from(settingsJson || "{}", "utf-8").toString("base64");
+
+  return `
+$data = get_post_meta(${postId}, '_elementor_data', true);
+if (empty($data)) { echo json_encode(array('error' => 'No Elementor data')); exit; }
+$arr = json_decode($data, true);
+if (empty($arr) || !is_array($arr)) { echo json_encode(array('error' => 'Invalid JSON')); exit; }
+
+$settings = json_decode(base64_decode('${settingsBase64}'), true);
+if (!is_array($settings)) $settings = array();
+
+// Generate unique 7-char hex ID
+$new_id = substr(md5(uniqid(mt_rand(), true)), 0, 7);
+
+$el_type = '${elType}';
+$widget_type = ${widgetType ? `'${widgetType}'` : "null"};
+$position = ${position !== undefined ? position : "null"};
+
+// Build new element
+$new_element = array(
+  'id' => $new_id,
+  'elType' => $el_type,
+  'settings' => $settings,
+  'elements' => array()
+);
+if ($widget_type !== null) {
+  $new_element['widgetType'] = $widget_type;
+}
+if ($el_type === 'container') {
+  $new_element['isInner'] = true;
+}
+
+// Find container and insert
+$found = false;
+function insert_into_container(&$elements, $target_id, $new_el, $pos, &$found) {
+  foreach ($elements as &$el) {
+    if ($el['id'] === $target_id) {
+      if (!isset($el['elements']) || !is_array($el['elements'])) {
+        $el['elements'] = array();
+      }
+      if ($pos === null || $pos >= count($el['elements'])) {
+        $el['elements'][] = $new_el;
+        $pos = count($el['elements']) - 1;
+      } else {
+        if ($pos < 0) $pos = 0;
+        array_splice($el['elements'], $pos, 0, array($new_el));
+      }
+      $found = true;
+      return $pos;
+    }
+    if (isset($el['elements']) && is_array($el['elements'])) {
+      $result = insert_into_container($el['elements'], $target_id, $new_el, $pos, $found);
+      if ($found) return $result;
+    }
+  }
+  return $pos;
+}
+
+$final_pos = insert_into_container($arr, '${containerId}', $new_element, $position, $found);
+
+if (!$found) {
+  echo json_encode(array('error' => 'Container not found: ${containerId}'));
+  exit;
+}
+
+$json = wp_json_encode($arr, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+update_post_meta(${postId}, '_elementor_data', wp_slash($json));
+delete_post_meta(${postId}, '_elementor_css');
+$upload = wp_upload_dir();
+$css_path = $upload['basedir'] . '/elementor/css/post-${postId}.css';
+if (file_exists($css_path)) { unlink($css_path); }
+
+echo json_encode(array(
+  'success' => true,
+  'postId' => ${postId},
+  'containerId' => '${containerId}',
+  'newElementId' => $new_id,
+  'elType' => $el_type,
+  'widgetType' => $widget_type,
+  'position' => (int) $final_pos
+), JSON_UNESCAPED_UNICODE);
+`;
+}
+
+/** Delete an element by ID */
+export function phpDeleteElement(postId: number, elementId: string): string {
+  return `
+$data = get_post_meta(${postId}, '_elementor_data', true);
+if (empty($data)) { echo json_encode(array('error' => 'No Elementor data')); exit; }
+$arr = json_decode($data, true);
+if (empty($arr) || !is_array($arr)) { echo json_encode(array('error' => 'Invalid JSON')); exit; }
+
+$found = false;
+$parent_id = null;
+
+function delete_from_tree(&$elements, $target, &$found, &$parent_id, $current_parent = null) {
+  foreach ($elements as $idx => &$el) {
+    if ($el['id'] === $target) {
+      array_splice($elements, $idx, 1);
+      $found = true;
+      $parent_id = $current_parent;
+      return;
+    }
+    if (isset($el['elements']) && is_array($el['elements'])) {
+      delete_from_tree($el['elements'], $target, $found, $parent_id, $el['id']);
+      if ($found) return;
+    }
+  }
+}
+
+delete_from_tree($arr, '${elementId}', $found, $parent_id);
+
+if (!$found) {
+  echo json_encode(array('error' => 'Element not found: ${elementId}'));
+  exit;
+}
+
+$json = wp_json_encode($arr, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+update_post_meta(${postId}, '_elementor_data', wp_slash($json));
+delete_post_meta(${postId}, '_elementor_css');
+$upload = wp_upload_dir();
+$css_path = $upload['basedir'] . '/elementor/css/post-${postId}.css';
+if (file_exists($css_path)) { unlink($css_path); }
+
+echo json_encode(array(
+  'success' => true,
+  'postId' => ${postId},
+  'deletedElementId' => '${elementId}',
+  'parentId' => $parent_id
+), JSON_UNESCAPED_UNICODE);
+`;
+}
+
+/** Move an element to a different container/position */
+export function phpMoveElement(
+  postId: number,
+  elementId: string,
+  targetContainerId: string,
+  position: number | undefined
+): string {
+  return `
+$data = get_post_meta(${postId}, '_elementor_data', true);
+if (empty($data)) { echo json_encode(array('error' => 'No Elementor data')); exit; }
+$arr = json_decode($data, true);
+if (empty($arr) || !is_array($arr)) { echo json_encode(array('error' => 'Invalid JSON')); exit; }
+
+$position = ${position !== undefined ? position : "null"};
+
+// Step 1: Extract (remove) the element from its current location
+$extracted = null;
+function extract_element(&$elements, $target, &$extracted) {
+  foreach ($elements as $idx => &$el) {
+    if ($el['id'] === $target) {
+      $extracted = $el;
+      array_splice($elements, $idx, 1);
+      return true;
+    }
+    if (isset($el['elements']) && is_array($el['elements'])) {
+      if (extract_element($el['elements'], $target, $extracted)) return true;
+    }
+  }
+  return false;
+}
+
+if (!extract_element($arr, '${elementId}', $extracted)) {
+  echo json_encode(array('error' => 'Element not found: ${elementId}'));
+  exit;
+}
+
+// Step 2: Insert into target container
+$inserted = false;
+function insert_element(&$elements, $target_id, $el, $pos, &$inserted) {
+  foreach ($elements as &$container) {
+    if ($container['id'] === $target_id) {
+      if (!isset($container['elements']) || !is_array($container['elements'])) {
+        $container['elements'] = array();
+      }
+      if ($pos === null || $pos >= count($container['elements'])) {
+        $container['elements'][] = $el;
+        $pos = count($container['elements']) - 1;
+      } else {
+        if ($pos < 0) $pos = 0;
+        array_splice($container['elements'], $pos, 0, array($el));
+      }
+      $inserted = true;
+      return $pos;
+    }
+    if (isset($container['elements']) && is_array($container['elements'])) {
+      $result = insert_element($container['elements'], $target_id, $el, $pos, $inserted);
+      if ($inserted) return $result;
+    }
+  }
+  return $pos;
+}
+
+$final_pos = insert_element($arr, '${targetContainerId}', $extracted, $position, $inserted);
+
+if (!$inserted) {
+  echo json_encode(array('error' => 'Target container not found: ${targetContainerId}'));
+  exit;
+}
+
+$json = wp_json_encode($arr, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+update_post_meta(${postId}, '_elementor_data', wp_slash($json));
+delete_post_meta(${postId}, '_elementor_css');
+$upload = wp_upload_dir();
+$css_path = $upload['basedir'] . '/elementor/css/post-${postId}.css';
+if (file_exists($css_path)) { unlink($css_path); }
+
+echo json_encode(array(
+  'success' => true,
+  'postId' => ${postId},
+  'elementId' => '${elementId}',
+  'targetContainerId' => '${targetContainerId}',
+  'position' => (int) $final_pos
+), JSON_UNESCAPED_UNICODE);
+`;
+}
+
+/** Update global kit settings (merge semantics) */
+export function phpUpdateGlobalKit(settingsJson: string): string {
+  const settingsBase64 = Buffer.from(settingsJson, "utf-8").toString("base64");
+
+  return `
+$kit_id = get_option('elementor_active_kit');
+if (empty($kit_id)) { echo json_encode(array('error' => 'No active Elementor kit found')); exit; }
+
+$existing = get_post_meta($kit_id, '_elementor_page_settings', true);
+if (!is_array($existing)) $existing = array();
+
+$new_settings = json_decode(base64_decode('${settingsBase64}'), true);
+if (empty($new_settings) || !is_array($new_settings)) {
+  echo json_encode(array('error' => 'Invalid settings JSON'));
+  exit;
+}
+
+// Merge new settings into existing
+foreach ($new_settings as $key => $value) {
+  $existing[$key] = $value;
+}
+
+update_post_meta($kit_id, '_elementor_page_settings', $existing);
+
+// Clear Elementor cache
+if (class_exists('Elementor\\\\Plugin')) {
+  ob_start();
+  \\Elementor\\Plugin::instance()->files_manager->clear_cache();
+  ob_end_clean();
+}
+
+echo json_encode(array(
+  'success' => true,
+  'kitPostId' => (int) $kit_id,
+  'updatedKeys' => array_keys($new_settings)
+), JSON_UNESCAPED_UNICODE);
+`;
+}
+
+// ─── Phase 2: Search & Efficiency ────────────────────────
+
+/** Search elements across all Elementor pages */
+export function phpSearchAllPages(
+  filters: {
+    widgetType?: string;
+    cssClass?: string;
+    contentText?: string;
+  }
+): string {
+  const conditions: string[] = [];
+
+  if (filters.widgetType) {
+    conditions.push(
+      `(isset($el['widgetType']) && $el['widgetType'] === '${filters.widgetType}')`
+    );
+  }
+  if (filters.cssClass) {
+    conditions.push(
+      `(isset($el['settings']['css_classes']) && strpos($el['settings']['css_classes'], '${filters.cssClass}') !== false)`
+    );
+  }
+
+  const contentSearch = filters.contentText
+    ? `
+    $content_match = false;
+    $search_term_g = '${filters.contentText.replace(/'/g, "\\'")}';
+    if (isset($el['settings']['title']) && stripos($el['settings']['title'], $search_term_g) !== false) $content_match = true;
+    if (isset($el['settings']['html']) && stripos($el['settings']['html'], $search_term_g) !== false) $content_match = true;
+    if (isset($el['settings']['editor']) && stripos($el['settings']['editor'], $search_term_g) !== false) $content_match = true;
+    if (isset($el['settings']['custom_css']) && stripos($el['settings']['custom_css'], $search_term_g) !== false) $content_match = true;
+    `
+    : "";
+  const contentCondition = filters.contentText ? "$content_match" : "";
+
+  const allConditions = [
+    ...conditions,
+    ...(contentCondition ? [contentCondition] : []),
+  ];
+  const conditionStr =
+    allConditions.length > 0 ? allConditions.join(" && ") : "true";
+
+  return `
+$pages = get_posts(array(
+  'post_type' => array('page', 'post'),
+  'numberposts' => -1,
+  'post_status' => 'any'
+));
+
+function search_els_global($elements, $path = array()) {
+  $results = array();
+  foreach ($elements as $el) {
+    $current_path = array_merge($path, array($el['id']));
+    ${contentSearch}
+    if (${conditionStr}) {
+      $snippet = '';
+      if (isset($el['settings']['title'])) $snippet = mb_substr(strip_tags($el['settings']['title']), 0, 100);
+      elseif (isset($el['settings']['html'])) $snippet = mb_substr(strip_tags($el['settings']['html']), 0, 100);
+      elseif (isset($el['settings']['editor'])) $snippet = mb_substr(strip_tags($el['settings']['editor']), 0, 100);
+
+      $results[] = array(
+        'elementId' => $el['id'],
+        'elType' => $el['elType'],
+        'widgetType' => isset($el['widgetType']) ? $el['widgetType'] : null,
+        'path' => $current_path,
+        'snippet' => $snippet,
+        'cssClasses' => isset($el['settings']['css_classes']) ? $el['settings']['css_classes'] : null,
+        'customElementId' => isset($el['settings']['_element_id']) ? $el['settings']['_element_id'] : null
+      );
+    }
+    if (isset($el['elements']) && is_array($el['elements'])) {
+      $results = array_merge($results, search_els_global($el['elements'], $current_path));
+    }
+  }
+  return $results;
+}
+
+$total = 0;
+$page_results = array();
+foreach ($pages as $p) {
+  $data = get_post_meta($p->ID, '_elementor_data', true);
+  if (empty($data)) continue;
+  $arr = json_decode($data, true);
+  if (empty($arr) || !is_array($arr)) continue;
+
+  $results = search_els_global($arr);
+  if (count($results) > 0) {
+    $page_results[] = array(
+      'postId' => $p->ID,
+      'title' => $p->post_title,
+      'results' => $results,
+      'count' => count($results)
+    );
+    $total += count($results);
+  }
+}
+
+echo json_encode(array(
+  'totalResults' => $total,
+  'pages' => $page_results
+), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+`;
+}
+
+/** Clone an element (same page or cross-page) */
+export function phpCloneElement(
+  postId: number,
+  elementId: string,
+  targetContainerId: string | undefined,
+  targetPostId: number | undefined
+): string {
+  const actualTargetPostId = targetPostId ?? postId;
+
+  return `
+// Load source page
+$source_data = get_post_meta(${postId}, '_elementor_data', true);
+if (empty($source_data)) { echo json_encode(array('error' => 'No Elementor data for source post ${postId}')); exit; }
+$source_arr = json_decode($source_data, true);
+if (empty($source_arr) || !is_array($source_arr)) { echo json_encode(array('error' => 'Invalid source JSON')); exit; }
+
+// Find source element
+function find_el_clone($elements, $target) {
+  foreach ($elements as $el) {
+    if ($el['id'] === $target) return $el;
+    if (isset($el['elements']) && is_array($el['elements'])) {
+      $found = find_el_clone($el['elements'], $target);
+      if ($found !== null) return $found;
+    }
+  }
+  return null;
+}
+
+$source_el = find_el_clone($source_arr, '${elementId}');
+if ($source_el === null) {
+  echo json_encode(array('error' => 'Source element not found: ${elementId}'));
+  exit;
+}
+
+// Deep clone with new IDs
+function deep_clone($element) {
+  $clone = $element;
+  $clone['id'] = substr(md5(uniqid(mt_rand(), true)), 0, 7);
+  if (isset($clone['elements']) && is_array($clone['elements'])) {
+    $new_children = array();
+    foreach ($clone['elements'] as $child) {
+      $new_children[] = deep_clone($child);
+    }
+    $clone['elements'] = $new_children;
+  }
+  return $clone;
+}
+
+$cloned = deep_clone($source_el);
+
+// Determine target
+$target_post_id = ${actualTargetPostId};
+$target_container_id = ${targetContainerId ? `'${targetContainerId}'` : "null"};
+
+// Load target data (may be same page or different)
+if ($target_post_id === ${postId}) {
+  $target_arr = &$source_arr;
+} else {
+  $target_data = get_post_meta($target_post_id, '_elementor_data', true);
+  if (empty($target_data)) { echo json_encode(array('error' => 'No Elementor data for target post ' . $target_post_id)); exit; }
+  $target_arr = json_decode($target_data, true);
+  if (empty($target_arr) || !is_array($target_arr)) { echo json_encode(array('error' => 'Invalid target JSON')); exit; }
+}
+
+$inserted = false;
+$final_container = '';
+$final_pos = 0;
+
+if ($target_container_id !== null) {
+  // Insert into specific container
+  function insert_clone(&$elements, $container_id, $clone, &$inserted) {
+    foreach ($elements as &$el) {
+      if ($el['id'] === $container_id) {
+        if (!isset($el['elements'])) $el['elements'] = array();
+        $el['elements'][] = $clone;
+        $inserted = true;
+        return count($el['elements']) - 1;
+      }
+      if (isset($el['elements']) && is_array($el['elements'])) {
+        $result = insert_clone($el['elements'], $container_id, $clone, $inserted);
+        if ($inserted) return $result;
+      }
+    }
+    return 0;
+  }
+  $final_pos = insert_clone($target_arr, $target_container_id, $cloned, $inserted);
+  $final_container = $target_container_id;
+} else {
+  // Insert after original in same parent
+  function insert_after_original(&$elements, $original_id, $clone, &$inserted) {
+    foreach ($elements as $idx => &$el) {
+      if ($el['id'] === $original_id) {
+        array_splice($elements, $idx + 1, 0, array($clone));
+        $inserted = true;
+        return $idx + 1;
+      }
+      if (isset($el['elements']) && is_array($el['elements'])) {
+        $result = insert_after_original($el['elements'], $original_id, $clone, $inserted);
+        if ($inserted) return $result;
+      }
+    }
+    return 0;
+  }
+  $final_pos = insert_after_original($target_arr, '${elementId}', $cloned, $inserted);
+  $final_container = 'same_parent';
+}
+
+if (!$inserted) {
+  echo json_encode(array('error' => 'Could not insert cloned element'));
+  exit;
+}
+
+// Save target
+$json = wp_json_encode($target_arr, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+update_post_meta($target_post_id, '_elementor_data', wp_slash($json));
+delete_post_meta($target_post_id, '_elementor_css');
+$upload = wp_upload_dir();
+$css_path = $upload['basedir'] . '/elementor/css/post-' . $target_post_id . '.css';
+if (file_exists($css_path)) { unlink($css_path); }
+
+// If cross-page and source was also modified (it shouldn't be but just in case same-page ref)
+if ($target_post_id === ${postId} && !isset($target_arr)) {
+  // already saved via reference
+}
+
+echo json_encode(array(
+  'success' => true,
+  'sourcePostId' => ${postId},
+  'sourceElementId' => '${elementId}',
+  'newElementId' => $cloned['id'],
+  'targetPostId' => $target_post_id,
+  'targetContainerId' => $final_container,
+  'position' => (int) $final_pos
+), JSON_UNESCAPED_UNICODE);
+`;
+}
+
+/** Export page Elementor data as JSON */
+export function phpExportPage(postId: number): string {
+  return `
+$post = get_post(${postId});
+if (!$post) { echo json_encode(array('error' => 'Post not found: ${postId}')); exit; }
+
+$data = get_post_meta(${postId}, '_elementor_data', true);
+if (empty($data)) { echo json_encode(array('error' => 'No Elementor data for post ${postId}')); exit; }
+$arr = json_decode($data, true);
+if (empty($arr) || !is_array($arr)) { echo json_encode(array('error' => 'Invalid Elementor JSON')); exit; }
+
+$page_settings = get_post_meta(${postId}, '_elementor_page_settings', true);
+if (!is_array($page_settings)) $page_settings = array();
+
+// Count elements
+$count = 0;
+$stack = $arr;
+while (count($stack) > 0) {
+  $el = array_pop($stack);
+  $count++;
+  if (isset($el['elements']) && is_array($el['elements'])) {
+    foreach ($el['elements'] as $child) { $stack[] = $child; }
+  }
+}
+
+echo json_encode(array(
+  'postId' => ${postId},
+  'title' => $post->post_title,
+  'elementorData' => $arr,
+  'pageSettings' => !empty($page_settings) ? $page_settings : new stdClass(),
+  'elementCount' => $count
+), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+`;
+}
+
 /** Update WordPress Additional CSS (append or replace) */
 export function phpUpdatePageCss(css: string, mode: "append" | "replace"): string {
   const cssBase64 = Buffer.from(css, "utf-8").toString("base64");

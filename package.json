@@ -1,6 +1,6 @@
 {
   "name": "wpw-elementor-mcp",
-  "version": "2.1.0",
+  "version": "4.0.0",
   "description": "MCP server for reading and modifying Elementor page data in a DDEV WordPress site",
   "type": "module",
   "main": "build/index.js",
@@ -11,7 +11,9 @@
     "build": "tsc",
     "watch": "tsc --watch",
     "dev": "npm run build && node build/index.js",
-    "start": "node build/index.js"
+    "start": "node build/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "repository": {
     "type": "git",
@@ -34,10 +36,12 @@
   "homepage": "https://github.com/8866Jason/wpw-elementor-mcp#readme",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.6.1",
+    "axios": "^1.7.0",
     "zod": "^3.25.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^4.0.18"
   }
 }

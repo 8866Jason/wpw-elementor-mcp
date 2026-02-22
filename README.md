@@ -1,310 +1,163 @@
-# Elementor MCP Server
+# wpw-elementor-mcp
 
-A Model Context Protocol (MCP) server that enables AI assistants to read and modify Elementor page builder data in WordPress sites running on DDEV.
+MCP server for reading and modifying Elementor page data in WordPress. Supports dual-mode operation: **DDEV** (local via WP-CLI) and **REST** (remote via bridge plugin).
 
-## Overview
+## Features
 
-This server exposes 16 tools (12 read, 4 write) that allow MCP-compatible clients such as Claude Code or Claude Desktop to interact with Elementor's page data directly through the WordPress database. It uses `ddev wp eval-file -` (stdin pipe) to execute PHP code, avoiding all shell escaping issues.
+- 23 tools: 12 read + 4 write + 4 CRUD + 3 search/efficiency
+- Dual-mode architecture — one codebase, two backends
+- Full Elementor data access: page tree, element settings, CSS, global kit
+- CRUD operations: add, delete, move, clone elements
+- Cross-page search and page export
+- Type-safe TypeScript with Zod schema validation
 
-### What It Can Do
+## Quick Start
 
-- Browse page structure and element hierarchy
-- Inspect element settings, including responsive (mobile/tablet) overrides
-- Analyze CSS from multiple sources: Elementor compiled CSS, WordPress Additional CSS, and page-level custom CSS
-- Read global design tokens (colors, fonts, layout defaults) from the Elementor kit
-- Update element settings with merge semantics (only specified keys change)
-- Update HTML widget content safely via base64 encoding
-- Append or replace WordPress Additional CSS
-- Clear Elementor CSS cache after changes
+### DDEV Mode (Local)
 
-## Requirements
-
-- Node.js 18+
-- A WordPress site managed by [DDEV](https://ddev.readthedocs.io/)
-- Elementor page builder plugin installed on the WordPress site
-
-## Installation
-
-```bash
-git clone https://github.com/8866Jason/wpw-elementor-mcp.git
-cd wpw-elementor-mcp
-npm install
-npm run build
-```
-
-## Configuration
-
-### Claude Code
-
-Add the server to your project's `.mcp.json` file:
+Requires a DDEV WordPress project with Elementor:
 
 ```json
 {
   "mcpServers": {
     "elementor": {
       "command": "node",
-      "args": ["/absolute/path/to/wpw-elementor-mcp/build/index.js"],
+      "args": ["/path/to/wpw-elementor-mcp/build/index.js"],
       "env": {
-        "DDEV_PROJECT_DIR": "/absolute/path/to/your/ddev/project"
+        "DDEV_PROJECT_DIR": "/path/to/your-ddev-project"
       }
     }
   }
 }
 ```
 
-### Claude Desktop
+### REST Mode (Remote)
 
-Add to your Claude Desktop configuration file (`claude_desktop_config.json`):
+Requires the bridge plugin installed on the WordPress site:
+
+1. Upload `wordpress-plugin/elementor-mcp-bridge.php` to `wp-content/plugins/`
+2. Activate the plugin in WordPress admin
+3. Create an Application Password in Users → Your Profile
 
 ```json
 {
   "mcpServers": {
     "elementor": {
       "command": "node",
-      "args": ["/absolute/path/to/wpw-elementor-mcp/build/index.js"],
+      "args": ["/path/to/wpw-elementor-mcp/build/index.js"],
       "env": {
-        "DDEV_PROJECT_DIR": "/absolute/path/to/your/ddev/project"
+        "ELEMENTOR_SITE_URL": "https://your-site.com",
+        "ELEMENTOR_USERNAME": "admin",
+        "ELEMENTOR_APP_PASSWORD": "xxxx xxxx xxxx xxxx"
       }
     }
   }
 }
 ```
 
-### Environment Variables
-
-| Variable | Required | Description |
-|---|---|---|
-| `DDEV_PROJECT_DIR` | Yes | Absolute path to the DDEV project root directory. Falls back to `process.cwd()` if not set. |
-
-## Tool Reference
+## Tools Reference
 
 ### Read Tools (12)
 
-#### elementor_list_pages
-
-List all pages and posts that have Elementor data. Returns post ID, title, status, URL, and element count.
-
-**Parameters:** None
-
----
-
-#### elementor_get_page_tree
-
-Get the element hierarchy tree for a page. Shows element types, IDs, widget types, content labels, and layout info (flex_direction, width, overflow, gap) on container nodes.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `postId` | number | Yes | WordPress post/page ID |
-
----
-
-#### elementor_get_element
-
-Get settings data for a specific element. Supports filtering to reduce output size.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `postId` | number | Yes | WordPress post/page ID |
-| `elementId` | string | Yes | Elementor element ID (7-8 character hex string) |
-| `filter` | string | No | `"all"` (default), `"layout"` (flex/width/overflow/gap/padding/margin keys only), or `"responsive"` (only `_mobile`/`_tablet` variants) |
-
----
-
-#### elementor_find_elements
-
-Search for elements by widget type, CSS class, element ID, or content text. All filters are combined with AND logic.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `postId` | number | Yes | WordPress post/page ID |
-| `widgetType` | string | No | Filter by widget type (heading, html, image, text-editor, video, form) |
-| `cssClass` | string | No | Filter by CSS class name (partial match) |
-| `elementId` | string | No | Filter by custom element ID (`_element_id` setting) |
-| `contentText` | string | No | Search in element content text (case-insensitive) |
-
----
-
-#### elementor_list_templates
-
-List all Elementor library templates (sections, pages, containers saved to the template library).
-
-**Parameters:** None
-
----
-
-#### elementor_get_element_context
-
-Get an element with full layout context: its own settings, all ancestor containers' layout settings, and sibling element summaries. Useful for debugging layout and spacing issues.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `postId` | number | Yes | WordPress post/page ID |
-| `elementId` | string | Yes | Elementor element ID |
-
----
-
-#### elementor_get_responsive_diff
-
-Show desktop vs tablet vs mobile settings diff for an element. Groups settings by breakpoint and lists which keys have mobile/tablet overrides.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `postId` | number | Yes | WordPress post/page ID |
-| `elementId` | string | Yes | Elementor element ID |
-
----
-
-#### elementor_get_layout_debug
-
-For a container element, show its flex layout settings and all children's layout properties in a compact table format. Useful for debugging flex layout, overflow, and spacing issues.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `postId` | number | Yes | WordPress post/page ID |
-| `containerId` | string | Yes | Container element ID |
-
----
-
-#### elementor_get_page_css
-
-Read all CSS sources that affect a page: WordPress Additional CSS (Customizer), Elementor page-level custom CSS, and Elementor global CSS.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `postId` | number | Yes | WordPress post/page ID |
-
----
-
-#### elementor_get_global_kit
-
-Read the Elementor active kit's global settings: system/custom colors, system/custom typography, container width default, widget spacing, page background color, and body typography.
-
-**Parameters:** None
-
----
-
-#### elementor_get_compiled_css
-
-Read the Elementor-compiled CSS for a page. Supports both external file mode (`/uploads/elementor/css/post-{id}.css`) and internal mode (`_elementor_css` post meta). Optionally filter to only rules matching a specific element ID.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `postId` | number | Yes | WordPress post/page ID |
-| `elementId` | string | No | Filter CSS to only rules matching this element ID |
-
----
-
-#### elementor_get_element_selector
-
-Get the CSS selectors for an element and find all matching CSS rules from both WordPress Additional CSS and Elementor compiled CSS. For widgets, includes both the outer selector (`.elementor-element-{id}`) and the inner selector (`> .elementor-widget-container`).
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `postId` | number | Yes | WordPress post/page ID |
-| `elementId` | string | Yes | Elementor element ID |
-
----
+| Tool | Description |
+|------|-------------|
+| `elementor_list_pages` | List all pages with Elementor data |
+| `elementor_get_page_tree` | Get element hierarchy tree for a page |
+| `elementor_get_element` | Get element settings (filterable: all/layout/responsive) |
+| `elementor_find_elements` | Search elements within a page by type/class/text |
+| `elementor_list_templates` | List Elementor library templates |
+| `elementor_get_element_context` | Get element with ancestor/sibling layout context |
+| `elementor_get_responsive_diff` | Desktop vs tablet vs mobile settings diff |
+| `elementor_get_layout_debug` | Container flex layout debug table |
+| `elementor_get_page_css` | Read all CSS sources for a page |
+| `elementor_get_global_kit` | Read global design tokens (colors, fonts, spacing) |
+| `elementor_get_compiled_css` | Read Elementor-compiled CSS file |
+| `elementor_get_element_selector` | Get CSS selectors and matching rules |
 
 ### Write Tools (4)
 
-#### elementor_update_element
+| Tool | Description |
+|------|-------------|
+| `elementor_update_element` | Update element settings (merge semantics) |
+| `elementor_update_html_widget` | Update HTML widget content safely |
+| `elementor_update_page_css` | Append/replace WordPress Additional CSS |
+| `elementor_clear_cache` | Clear Elementor CSS cache |
 
-Update specific settings on an Elementor element. Uses merge semantics: only the specified keys are updated, other settings are preserved. Automatically clears the page CSS cache after update.
+### CRUD Tools (4)
 
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `postId` | number | Yes | WordPress post/page ID |
-| `elementId` | string | Yes | Elementor element ID |
-| `settings` | object | Yes | Key-value pairs to merge into the element's settings |
+| Tool | Description |
+|------|-------------|
+| `elementor_add_element` | Add new container or widget to a page |
+| `elementor_delete_element` | Delete element and all children |
+| `elementor_move_element` | Move element to different container/position |
+| `elementor_update_global_kit` | Update global design tokens |
 
----
+### Search & Efficiency Tools (3)
 
-#### elementor_update_html_widget
-
-Update an HTML widget's content. Handles HTML containing `<script>` tags, quotes, and special characters safely via base64 encoding.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `postId` | number | Yes | WordPress post/page ID |
-| `elementId` | string | Yes | Elementor element ID of the HTML widget |
-| `htmlContent` | string | Yes | New HTML content for the widget |
-| `customCss` | string | No | Custom CSS to set on the widget |
-
----
-
-#### elementor_update_page_css
-
-Write to WordPress Additional CSS (Customizer). Automatically clears Elementor cache after update.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `css` | string | Yes | CSS content to write |
-| `mode` | string | No | `"append"` (default) adds to existing CSS, `"replace"` overwrites all |
-
----
-
-#### elementor_clear_cache
-
-Clear all Elementor CSS cache files. Run this after making changes if the frontend does not reflect updates.
-
-**Parameters:** None
+| Tool | Description |
+|------|-------------|
+| `elementor_search_all_pages` | Search elements across ALL pages at once |
+| `elementor_clone_element` | Deep-clone element (same page or cross-page) |
+| `elementor_export_page` | Export complete page Elementor data as JSON |
 
 ## Architecture
 
 ```
-src/
-  index.ts          -- MCP server entry point, tool registration
-  elementor.ts      -- Service layer, orchestrates WP-CLI calls
-  php-templates.ts  -- PHP code templates for all Elementor operations
-  wp-cli.ts         -- WP-CLI execution wrapper (ddev wp eval-file -)
-  types.ts          -- TypeScript interfaces
+wpw-elementor-mcp/
+├── src/
+│   ├── index.ts            # MCP server entry, tool registration (23 tools)
+│   ├── elementor.ts         # Service layer (parse/validate backend output)
+│   ├── backend.ts           # Backend interface (ElementorBackend)
+│   ├── ddev-backend.ts      # DDEV mode: WP-CLI + PHP eval
+│   ├── rest-backend.ts      # REST mode: HTTP client calls
+│   ├── rest-client.ts       # Axios HTTP client with auth
+│   ├── php-templates.ts     # PHP code templates for DDEV mode
+│   ├── types.ts             # TypeScript interfaces
+│   └── wp-cli.ts            # WP-CLI command runner
+├── wordpress-plugin/
+│   └── elementor-mcp-bridge.php   # REST API bridge (24 endpoints)
+├── build/                   # Compiled JavaScript
+├── package.json
+└── tsconfig.json
 ```
 
-### How It Works
+### Dual-Mode Design
 
-1. The MCP server receives a tool call from the client over stdio.
-2. The service layer (`elementor.ts`) selects the appropriate PHP template from `php-templates.ts`.
-3. The PHP code is piped to `ddev wp eval-file -` via stdin, which executes it within the WordPress environment.
-4. The PHP code reads or modifies Elementor data stored in `_elementor_data` post meta and returns JSON.
-5. The server parses the JSON response and returns it to the client.
+The server auto-detects the backend mode based on environment variables:
 
-This stdin-pipe approach avoids all shell escaping issues that arise when embedding PHP code in shell command arguments.
+- **REST mode** activates when `ELEMENTOR_SITE_URL`, `ELEMENTOR_USERNAME`, and `ELEMENTOR_APP_PASSWORD` are all set
+- **DDEV mode** is the fallback, using WP-CLI to execute PHP directly
 
-### CSS Resolution
+Both modes implement the same `ElementorBackend` interface, ensuring identical tool behavior regardless of the transport.
 
-Elementor stores compiled CSS in two possible modes:
+## WordPress Bridge Plugin
 
-- **External file mode**: CSS files at `/wp-content/uploads/elementor/css/post-{id}.css`
-- **Internal mode**: CSS stored in `_elementor_css` post meta in the database
+The `elementor-mcp-bridge.php` file is a single-file WordPress plugin that exposes 24 REST API endpoints under the `elementor-mcp/v1` namespace. It:
 
-The CSS tools (`get_compiled_css`, `get_element_selector`) check both sources automatically with external file as the primary and database as the fallback.
+- Uses WordPress Application Password authentication
+- Requires `edit_posts` capability
+- Returns JSON responses matching DDEV mode output format
+- Clears CSS cache after write operations
+- Works on PHP 7.4+ with no external dependencies
 
 ## Development
 
 ```bash
-# Build
+# Install dependencies
+npm install
+
+# Build TypeScript
 npm run build
 
-# Watch mode (rebuild on file changes)
+# Watch mode
 npm run watch
 
-# Build and run
-npm run dev
+# Run tests
+npm test
+
+# Start server directly
+npm start
 ```
-
-### Testing with MCP Inspector
-
-```bash
-DDEV_PROJECT_DIR=/path/to/your/ddev/project npx @modelcontextprotocol/inspector node build/index.js
-```
-
-## Known Considerations
-
-- **Widget margins**: Elementor's `_margin` / `_margin_mobile` on widgets generates CSS on the inner `.elementor-widget-container` element, not the outer `.elementor-element-{id}`. This means widget margins do not affect flex layout spacing between siblings. Use WordPress Additional CSS with `!important` on the outer element selector instead.
-
-- **Container margins**: For Elementor containers (not widgets), the `margin` setting applies to the outer element as expected.
-
-- **Responsive defaults**: Containers without an explicit `flex_direction_mobile` setting keep the desktop direction on mobile. You must explicitly set `flex_direction_mobile: "column"` for mobile vertical stacking.
 
 ## License
 

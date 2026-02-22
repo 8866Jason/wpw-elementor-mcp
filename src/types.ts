@@ -154,3 +154,73 @@ export interface ElementSelectorInfo {
   matchingAdditionalCss: string[];
   matchingCompiledCss: string[];
 }
+
+// ─── Phase 1: CRUD Completion ─────────────────────────────
+
+/** Result of adding a new element */
+export interface AddElementResult {
+  success: boolean;
+  postId: number;
+  containerId: string;
+  newElementId: string;
+  elType: string;
+  widgetType?: string;
+  position: number;
+}
+
+/** Result of deleting an element */
+export interface DeleteElementResult {
+  success: boolean;
+  postId: number;
+  deletedElementId: string;
+  parentId: string | null;
+}
+
+/** Result of moving an element */
+export interface MoveElementResult {
+  success: boolean;
+  postId: number;
+  elementId: string;
+  targetContainerId: string;
+  position: number;
+}
+
+/** Result of updating global kit */
+export interface UpdateGlobalKitResult {
+  success: boolean;
+  kitPostId: number;
+  updatedKeys: string[];
+}
+
+// ─── Phase 2: Search & Efficiency ─────────────────────────
+
+/** Cross-page search results */
+export interface CrossPageSearchResult {
+  totalResults: number;
+  pages: Array<{
+    postId: number;
+    title: string;
+    results: ElementSearchResult[];
+    count: number;
+  }>;
+}
+
+/** Result of cloning an element */
+export interface CloneElementResult {
+  success: boolean;
+  sourcePostId: number;
+  sourceElementId: string;
+  newElementId: string;
+  targetPostId: number;
+  targetContainerId: string;
+  position: number;
+}
+
+/** Exported page data */
+export interface ExportPageResult {
+  postId: number;
+  title: string;
+  elementorData: unknown[];
+  pageSettings: Record<string, unknown>;
+  elementCount: number;
+}

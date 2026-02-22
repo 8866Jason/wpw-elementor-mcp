@@ -1,5 +1,3 @@
-import { WpCli } from "./wp-cli.js";
-import * as php from "./php-templates.js";
 import type {
   ElementorPageInfo,
   ElementorTemplateInfo,
@@ -10,26 +8,34 @@ import type {
   GlobalKitInfo,
   CompiledCssInfo,
   ElementSelectorInfo,
+  AddElementResult,
+  DeleteElementResult,
+  MoveElementResult,
+  UpdateGlobalKitResult,
+  CrossPageSearchResult,
+  CloneElementResult,
+  ExportPageResult,
 } from "./types.js";
+import type { ElementorBackend } from "./backend.js";
 
 export class ElementorService {
-  private wp: WpCli;
+  private backend: ElementorBackend;
 
-  constructor(projectDir: string) {
-    this.wp = new WpCli(projectDir);
+  constructor(backend: ElementorBackend) {
+    this.backend = backend;
   }
 
-  // ─── Existing Read Methods ──────────────────────────────
+  // ─── Read Methods ─────────────────────────────────────────
 
   async listPages(): Promise<ElementorPageInfo[]> {
-    const raw = await this.wp.evalFile(php.phpListPages());
+    const raw = await this.backend.listPages();
     return JSON.parse(raw);
   }
 
   async getPageTree(
     postId: number
   ): Promise<{ postId: number; tree: unknown[] }> {
-    const raw = await this.wp.evalFile(php.phpGetPageTree(postId));
+    const raw = await this.backend.getPageTree(postId);
     const result = JSON.parse(raw);
     if (result.error) throw new Error(result.error);
     return result;
@@ -40,9 +46,7 @@ export class ElementorService {
     elementId: string,
     filter: "all" | "layout" | "responsive" = "all"
   ): Promise<{ element: unknown; path: string[]; filter?: string }> {
-    const raw = await this.wp.evalFile(
-      php.phpGetElement(postId, elementId, filter)
-    );
+    const raw = await this.backend.getElement(postId, elementId, filter);
     const result = JSON.parse(raw);
     if (result.error) throw new Error(result.error);
     return result;
@@ -57,28 +61,22 @@ export class ElementorService {
       contentText?: string;
     }
   ): Promise<{ postId: number; results: unknown[]; count: number }> {
-    const raw = await this.wp.evalFile(
-      php.phpFindElements(postId, filters)
-    );
+    const raw = await this.backend.findElements(postId, filters);
     const result = JSON.parse(raw);
     if (result.error) throw new Error(result.error);
     return result;
   }
 
   async listTemplates(): Promise<ElementorTemplateInfo[]> {
-    const raw = await this.wp.evalFile(php.phpListTemplates());
+    const raw = await this.backend.listTemplates();
     return JSON.parse(raw);
   }
-
-  // ─── New Read Methods ───────────────────────────────────
 
   async getElementContext(
     postId: number,
     elementId: string
   ): Promise<ElementContext> {
-    const raw = await this.wp.evalFile(
-      php.phpGetElementContext(postId, elementId)
-    );
+    const raw = await this.backend.getElementContext(postId, elementId);
     const result = JSON.parse(raw);
     if (result.error) throw new Error(result.error);
     return result;
@@ -88,9 +86,7 @@ export class ElementorService {
     postId: number,
     elementId: string
   ): Promise<ResponsiveDiff> {
-    const raw = await this.wp.evalFile(
-      php.phpGetResponsiveDiff(postId, elementId)
-    );
+    const raw = await this.backend.getResponsiveDiff(postId, elementId);
     const result = JSON.parse(raw);
     if (result.error) throw new Error(result.error);
     return result;
@@ -100,23 +96,21 @@ export class ElementorService {
     postId: number,
     containerId: string
   ): Promise<LayoutDebugInfo> {
-    const raw = await this.wp.evalFile(
-      php.phpGetLayoutDebug(postId, containerId)
-    );
+    const raw = await this.backend.getLayoutDebug(postId, containerId);
     const result = JSON.parse(raw);
     if (result.error) throw new Error(result.error);
     return result;
   }
 
   async getPageCss(postId: number): Promise<PageCssInfo> {
-    const raw = await this.wp.evalFile(php.phpGetPageCss(postId));
+    const raw = await this.backend.getPageCss(postId);
     const result = JSON.parse(raw);
     if (result.error) throw new Error(result.error);
     return result;
   }
 
   async getGlobalKit(): Promise<GlobalKitInfo> {
-    const raw = await this.wp.evalFile(php.phpGetGlobalKit());
+    const raw = await this.backend.getGlobalKit();
     const result = JSON.parse(raw);
     if (result.error) throw new Error(result.error);
     return result;
@@ -126,9 +120,7 @@ export class ElementorService {
     postId: number,
     elementId?: string
   ): Promise<CompiledCssInfo> {
-    const raw = await this.wp.evalFile(
-      php.phpGetCompiledCss(postId, elementId)
-    );
+    const raw = await this.backend.getCompiledCss(postId, elementId);
     const result = JSON.parse(raw);
     if (result.error) throw new Error(result.error);
     return result;
@@ -138,15 +130,13 @@ export class ElementorService {
     postId: number,
     elementId: string
   ): Promise<ElementSelectorInfo> {
-    const raw = await this.wp.evalFile(
-      php.phpGetElementSelector(postId, elementId)
-    );
+    const raw = await this.backend.getElementSelector(postId, elementId);
     const result = JSON.parse(raw);
     if (result.error) throw new Error(result.error);
     return result;
   }
 
-  // ─── Existing Write Methods ─────────────────────────────
+  // ─── Write Methods ────────────────────────────────────────
 
   async updateElement(
     postId: number,
@@ -159,9 +149,7 @@ export class ElementorService {
     updatedKeys: string[];
   }> {
     const settingsJson = JSON.stringify(settings);
-    const raw = await this.wp.evalFile(
-      php.phpUpdateElement(postId, elementId, settingsJson)
-    );
+    const raw = await this.backend.updateElement(postId, elementId, settingsJson);
     const result = JSON.parse(raw);
     if (result.error) throw new Error(result.error);
     return result;
@@ -179,15 +167,11 @@ export class ElementorService {
     htmlLength: number;
     cssUpdated: boolean;
   }> {
-    const raw = await this.wp.evalFile(
-      php.phpUpdateHtmlWidget(postId, elementId, htmlContent, customCss)
-    );
+    const raw = await this.backend.updateHtmlWidget(postId, elementId, htmlContent, customCss);
     const result = JSON.parse(raw);
     if (result.error) throw new Error(result.error);
     return result;
   }
-
-  // ─── New Write Methods ──────────────────────────────────
 
   async updatePageCss(
     css: string,
@@ -198,13 +182,105 @@ export class ElementorService {
     cssLength: number;
     previousLength: number;
   }> {
-    const raw = await this.wp.evalFile(php.phpUpdatePageCss(css, mode));
+    const raw = await this.backend.updatePageCss(css, mode);
     const result = JSON.parse(raw);
     if (result.error) throw new Error(result.error);
     return result;
   }
 
   async clearCache(): Promise<string> {
-    return await this.wp.command("elementor flush_css");
+    const raw = await this.backend.clearCache();
+    const result = JSON.parse(raw);
+    return result.message || "Elementor CSS cache cleared successfully.";
+  }
+
+  // ─── Phase 1: CRUD Completion ────────────────────────────
+
+  async addElement(
+    postId: number,
+    containerId: string,
+    elType: string,
+    widgetType?: string,
+    settings?: Record<string, unknown>,
+    position?: number
+  ): Promise<AddElementResult> {
+    const settingsJson = JSON.stringify(settings ?? {});
+    const raw = await this.backend.addElement(
+      postId, containerId, elType, widgetType, settingsJson, position
+    );
+    const result = JSON.parse(raw);
+    if (result.error) throw new Error(result.error);
+    return result;
+  }
+
+  async deleteElement(
+    postId: number,
+    elementId: string
+  ): Promise<DeleteElementResult> {
+    const raw = await this.backend.deleteElement(postId, elementId);
+    const result = JSON.parse(raw);
+    if (result.error) throw new Error(result.error);
+    return result;
+  }
+
+  async moveElement(
+    postId: number,
+    elementId: string,
+    targetContainerId: string,
+    position?: number
+  ): Promise<MoveElementResult> {
+    const raw = await this.backend.moveElement(
+      postId, elementId, targetContainerId, position
+    );
+    const result = JSON.parse(raw);
+    if (result.error) throw new Error(result.error);
+    return result;
+  }
+
+  async updateGlobalKit(
+    settings: Record<string, unknown>
+  ): Promise<UpdateGlobalKitResult> {
+    const settingsJson = JSON.stringify(settings);
+    const raw = await this.backend.updateGlobalKit(settingsJson);
+    const result = JSON.parse(raw);
+    if (result.error) throw new Error(result.error);
+    return result;
+  }
+
+  // ─── Phase 2: Search & Efficiency ────────────────────────
+
+  async searchAllPages(
+    filters: {
+      widgetType?: string;
+      cssClass?: string;
+      elementId?: string;
+      contentText?: string;
+    }
+  ): Promise<CrossPageSearchResult> {
+    const raw = await this.backend.searchAllPages(filters);
+    const result = JSON.parse(raw);
+    if (result.error) throw new Error(result.error);
+    return result;
+  }
+
+  async cloneElement(
+    postId: number,
+    elementId: string,
+    targetContainerId?: string,
+    targetPostId?: number
+  ): Promise<CloneElementResult> {
+    const raw = await this.backend.cloneElement(
+      postId, elementId, targetContainerId, targetPostId
+    );
+    const result = JSON.parse(raw);
+    if (result.error) throw new Error(result.error);
+    return result;
+  }
+
+  async exportPage(postId: number): Promise<ExportPageResult> {
+    const raw = await this.backend.exportPage(postId);
+    const result = JSON.parse(raw);
+    if (result.error) throw new Error(result.error);
+    return result;
   }
 }
